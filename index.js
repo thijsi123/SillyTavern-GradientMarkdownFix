@@ -12,9 +12,9 @@ const SETTINGS_KEY = 'gradientMarkdownFix';
 // Default settings
 const defaultSettings = {
     enabled: true,
-    warningColor: '#ffaa00', // Yellow/orange for warning
+    warningColor: '#ffaa00',
     useThemeColors: true,
-    persistentGradient: true // Keep the gradient permanently, no animation
+    persistentGradient: true
 };
 
 // Global state
@@ -40,7 +40,6 @@ function getSettings() {
  */
 function getThemeColors() {
     try {
-        // Try to get settings from localStorage
         const settings = localStorage.getItem('settings');
         if (settings) {
             const parsed = JSON.parse(settings);
@@ -57,7 +56,6 @@ function getThemeColors() {
         console.error('Failed to load theme colors:', error);
     }
 
-    // Fallback to default colors
     return {
         quote: 'rgba(225, 138, 36, 1)',
         main: 'rgba(220, 220, 210, 1)',
@@ -78,34 +76,54 @@ function saveSettings() {
 }
 
 /**
- * Simulate the fixMarkdown function to detect what would be fixed
+ * Find which quote/markdown is actually unclosed by parsing from start to end
  */
-function simulateFixMarkdown(text) {
-    const lines = text.split('\n');
-    const fixedLines = [];
+function findUnclosedMarkdown(text) {
+    const result = {
+        hasUnclosed: false,
+        unclosedChar: null,
+        unclosedStartIndex: -1,
+        unclosedText: ''
+    };
 
-    for (const line of lines) {
-        const charsToCheck = ['*', '"'];
-        let fixedLine = line;
+    // Track state for each markdown character
+    const markdownStates = {
+        '"': { open: false, startIndex: -1 },
+        '*': { open: false, startIndex: -1 },
+        '_': { open: false, startIndex: -1 }
+    };
 
-        for (const char of charsToCheck) {
-            // Count occurrences of the character
-            const count = (line.match(new RegExp(`\\${char}`, 'g')) || []).length;
-
-            // If odd number, markdown is unclosed
-            if (count % 2 === 1) {
-                // This line has unclosed markdown
-                fixedLines.push(line + char); // Show what would be added
-                continue;
+    // Parse character by character
+    for (let i = 0; i < text.length; i++) {
+        const char = text[i];
+        
+        if (char === '"' || char === '*' || char === '_') {
+            const state = markdownStates[char];
+            
+            if (!state.open) {
+                // Opening markdown
+                state.open = true;
+                state.startIndex = i;
+            } else {
+                // Closing markdown
+                state.open = false;
+                state.startIndex = -1;
             }
-        }
-
-        if (fixedLine === line) {
-            fixedLines.push(line); // No changes needed
         }
     }
 
-    return fixedLines.join('\n');
+    // Check which markdown is still open
+    for (const [char, state] of Object.entries(markdownStates)) {
+        if (state.open && state.startIndex !== -1) {
+            result.hasUnclosed = true;
+            result.unclosedChar = char;
+            result.unclosedStartIndex = state.startIndex;
+            result.unclosedText = text.substring(state.startIndex);
+            break; // Return first unclosed markdown found
+        }
+    }
+
+    return result;
 }
 
 /**
@@ -116,181 +134,146 @@ function applyGradientToMessage(messageElement) {
         return;
     }
 
-    // Get the parent message element to find the raw text
     const messageContainer = messageElement.closest('.mes') || messageElement.parentElement;
     if (!messageContainer) return;
 
-    // Find the message text container to get raw text
     const messageTextContainer = messageContainer.querySelector('.mes_text');
     if (!messageTextContainer) return;
 
-    // Get the raw text content before markdown processing
+    // Get the raw text content
     const rawText = messageTextContainer.textContent || '';
 
-    // Debug: Check quote count in raw text
-    const quoteCount = (rawText.match(/"/g) || []).length;
-    console.log(`Gradient Markdown Fix: Quote count in raw text: ${quoteCount}, is odd: ${quoteCount % 2 === 1}`);
-
-    // First, remove any existing gradient classes from this message
+    // First, remove any existing gradient classes
     const existingGradients = messageElement.querySelectorAll('.gradient-fixed-markdown');
     existingGradients.forEach(element => {
         element.classList.remove('gradient-fixed-markdown');
         element.classList.remove('q', 'i', 'em', 'u', 'strong', 'b');
     });
 
-    // Track if we've applied any gradient
-    let hasAppliedGradient = false;
+    // Find what's actually unclosed
+    const unclosedInfo = findUnclosedMarkdown(rawText);
 
-    // Find all markdown elements
+    console.log('Gradient Markdown Fix: Unclosed analysis:', unclosedInfo);
+
+    if (!unclosedInfo.hasUnclosed) {
+        return; // Nothing to highlight
+    }
+
+    // Get the text that should be highlighted (everything from the unclosed markdown to the end)
+    const textToHighlight = unclosedInfo.unclosedText.substring(1); // Remove the opening quote/markdown char itself
+
+    console.log(`Gradient Markdown Fix: Text to highlight: "${textToHighlight}"`);
+
+    // Find the element that contains this text
     const markdownElements = messageElement.querySelectorAll('i, em, u, strong, b, q, blockquote, code');
-
-    console.log(`Gradient Markdown Fix: Found ${markdownElements.length} markdown elements`);
-    console.log(`Raw text: "${rawText}"`);
+    let foundMatch = false;
 
     markdownElements.forEach(element => {
         const elementText = element.textContent || '';
-        console.log(`Checking element: "${elementText}"`);
-
-        // Check if this element represents unclosed markdown that would be fixed
-        const hasUnclosedMarkdown = detectUnclosedMarkdown(rawText, elementText);
-
-        if (hasUnclosedMarkdown) {
-            console.log(`Gradient Markdown Fix: Applying gradient to unclosed markdown: "${elementText}"`);
-            applyElementGradient(element);
-            hasAppliedGradient = true;
+        
+        // Check if this element contains the text that should be highlighted
+        // We need to check if this element's text is at the END of the message
+        // and matches what comes after the unclosed markdown
+        if (elementText.trim() && textToHighlight.includes(elementText.trim())) {
+            // Additional check: make sure this is actually at the end
+            const elementIndex = rawText.lastIndexOf(elementText);
+            const textAfterElement = rawText.slice(elementIndex + elementText.length).trim();
+            
+            // If there's very little text after this element, it's likely the unclosed one
+            if (textAfterElement.length < 20) {
+                console.log(`Gradient Markdown Fix: Applying gradient to: "${elementText}"`);
+                applyElementGradient(element, unclosedInfo.unclosedChar);
+                foundMatch = true;
+            }
         }
     });
 
-    // Special case: If we have unclosed markdown but no matching element was found,
-    // we need to find the text that should be marked as unclosed
-    if (hasUnclosedMarkdownPattern(rawText) && !hasAppliedGradient) {
-        console.log('Gradient Markdown Fix: Unclosed markdown detected but no matching element found');
-        console.log('Gradient Markdown Fix: Looking for unclosed text at the end...');
-
-        // Find the last text node that contains unclosed markdown
-        findAndStyleUnclosedText(messageElement, rawText);
+    // If no markdown element was found, try to wrap the unclosed text manually
+    if (!foundMatch) {
+        console.log('Gradient Markdown Fix: No matching element found, wrapping manually');
+        wrapUnclosedText(messageElement, unclosedInfo);
     }
 
-    // Add CSS for the gradient styling if not already added
+    // Add CSS for the gradient styling
     if (!document.getElementById('gradient-markdown-fix-styles')) {
         addGradientStyles();
     }
 }
 
 /**
- * Detect if markdown element represents unclosed markdown that would be auto-fixed
- */
-function detectUnclosedMarkdown(rawText, elementText) {
-    const cleanElementText = elementText.trim();
-    console.log(`  detectUnclosedMarkdown: element="${cleanElementText}"`);
-
-    // Only check elements that have markdown formatting
-    if (!/[\*_"]/.test(cleanElementText)) {
-        console.log(`  - No markdown formatting found`);
-        return false;
-    }
-
-    // Check if this element is the last markdown element in the message
-    const isLastElement = isLastMarkdownElement(rawText, cleanElementText);
-    console.log(`  - Is last element: ${isLastElement}`);
-
-    if (!isLastElement) {
-        return false; // Only highlight the last markdown element
-    }
-
-    // Check if the raw text has unclosed markdown patterns
-    const hasUnclosedPattern = hasUnclosedMarkdownPattern(rawText);
-    console.log(`  - Has unclosed pattern: ${hasUnclosedPattern}`);
-
-    return hasUnclosedPattern;
-}
-
-/**
- * Check if this element is the last markdown element in the message
- */
-function isLastMarkdownElement(rawText, elementText) {
-    // Get the position of this element's text in the raw text
-    const elementIndex = rawText.lastIndexOf(elementText);
-
-    if (elementIndex === -1) {
-        console.log(`    - Element text not found in raw text`);
-        return false; // Couldn't find the element text in raw text
-    }
-
-    // Check if this element appears near the end of the message
-    const textAfterElement = rawText.slice(elementIndex + elementText.length);
-    const isNearEnd = textAfterElement.trim().length < 100; // Less than 100 chars after
-    console.log(`    - Text after element: "${textAfterElement}" (${textAfterElement.trim().length} chars), is near end: ${isNearEnd}`);
-
-    return isNearEnd;
-}
-
-/**
- * Check if the raw text has unclosed markdown patterns
- */
-function hasUnclosedMarkdownPattern(text) {
-    // Check for unclosed markdown in the entire text
-    const charsToCheck = ['*', '"'];
-
-    for (const char of charsToCheck) {
-        // Count occurrences of the character in the entire text
-        const count = (text.match(new RegExp(`\\${char}`, 'g')) || []).length;
-
-        // If odd number, markdown is unclosed
-        if (count % 2 === 1) {
-            console.log(`Gradient Markdown Fix: Found unclosed markdown for character '${char}' (count: ${count})`);
-            return true;
-        }
-    }
-
-    return false;
-}
-
-/**
  * Apply gradient styling to a single element
  */
-function applyElementGradient(element) {
-    // Add classes for CSS styling - let CSS handle the gradient
+function applyElementGradient(element, markdownChar) {
     element.classList.add('gradient-fixed-markdown');
-    element.classList.add(element.tagName.toLowerCase());
+    
+    // Add specific class based on markdown type
+    if (markdownChar === '"') {
+        element.classList.add('q');
+    } else if (markdownChar === '*') {
+        const tagName = element.tagName.toLowerCase();
+        if (tagName === 'strong' || tagName === 'b') {
+            element.classList.add('strong');
+        } else if (tagName === 'i' || tagName === 'em') {
+            element.classList.add('em');
+        }
+    } else if (markdownChar === '_') {
+        element.classList.add('u');
+    }
 }
 
 /**
- * Find and style unclosed text that isn't wrapped in markdown elements
+ * Wrap unclosed text that isn't already in a markdown element
  */
-function findAndStyleUnclosedText(messageElement, rawText) {
-    // Find the last paragraph or text container
+function wrapUnclosedText(messageElement, unclosedInfo) {
     const paragraphs = messageElement.querySelectorAll('p');
     if (paragraphs.length === 0) return;
 
     const lastParagraph = paragraphs[paragraphs.length - 1];
-    const paragraphHTML = lastParagraph.innerHTML;
+    const paragraphText = lastParagraph.textContent || '';
 
-    console.log(`Gradient Markdown Fix: Last paragraph HTML: ${paragraphHTML}`);
+    // Find where the unclosed text starts in the last paragraph
+    const unclosedTextWithoutChar = unclosedInfo.unclosedText.substring(1);
+    
+    // Check if the paragraph contains the unclosed text
+    if (!paragraphText.includes(unclosedTextWithoutChar)) {
+        console.log('Gradient Markdown Fix: Last paragraph does not contain unclosed text');
+        return;
+    }
 
-    // Look for text that contains unclosed quotes at the end
-    const textContent = lastParagraph.textContent || '';
-    const quoteCount = (textContent.match(/"/g) || []).length;
+    // Find the last text node in the paragraph
+    const walker = document.createTreeWalker(
+        lastParagraph,
+        NodeFilter.SHOW_TEXT,
+        null,
+        false
+    );
 
-    if (quoteCount % 2 === 1) {
-        console.log(`Gradient Markdown Fix: Unclosed quote detected in paragraph, count: ${quoteCount}`);
-
-        // Find the last quote in the paragraph
-        const lastQuoteIndex = textContent.lastIndexOf('"');
-        if (lastQuoteIndex !== -1) {
-            // Get the text after the last quote
-            const textAfterLastQuote = textContent.slice(lastQuoteIndex);
-            console.log(`Gradient Markdown Fix: Text after last quote: "${textAfterLastQuote}"`);
-
-            // Wrap the unclosed quote text in a span with quote class
-            const newHTML = paragraphHTML.replace(
-                textAfterLastQuote,
-                `<span class="gradient-fixed-markdown q">${textAfterLastQuote}</span>`
-            );
-
-            lastParagraph.innerHTML = newHTML;
-            console.log('Gradient Markdown Fix: Applied gradient to unclosed quote text');
+    let lastTextNode = null;
+    let node;
+    while (node = walker.nextNode()) {
+        if (node.textContent.trim()) {
+            lastTextNode = node;
         }
+    }
+
+    if (!lastTextNode) return;
+
+    const lastText = lastTextNode.textContent;
+    
+    // Check if this text node ends with part of the unclosed text
+    if (unclosedTextWithoutChar.endsWith(lastText.trim()) || lastText.trim().endsWith(unclosedTextWithoutChar.trim())) {
+        // Wrap this text node
+        const span = document.createElement('span');
+        span.className = 'gradient-fixed-markdown';
+        
+        if (unclosedInfo.unclosedChar === '"') {
+            span.classList.add('q');
+        }
+        
+        span.textContent = lastText;
+        lastTextNode.parentNode.replaceChild(span, lastTextNode);
+        
+        console.log('Gradient Markdown Fix: Wrapped unclosed text node');
     }
 }
 
@@ -310,18 +293,14 @@ function addGradientStyles() {
     style.id = styleId;
     style.textContent = `
         .gradient-fixed-markdown {
-            /* Apply gradient only to text, not background */
             background-image: linear-gradient(90deg, ${themeColors.quote}, ${warningColor}) !important;
             background-clip: text !important;
             -webkit-background-clip: text !important;
             -webkit-text-fill-color: transparent !important;
             color: transparent !important;
-
-            /* Ensure no background color bleeds through */
             background-color: transparent !important;
         }
 
-        /* Special styles for different markdown types */
         .gradient-fixed-markdown.q {
             background-image: linear-gradient(90deg, ${themeColors.quote}, ${warningColor}) !important;
         }
@@ -348,21 +327,14 @@ function addGradientStyles() {
  * Initialize the extension
  */
 function initExtension() {
-    // Load settings
     extensionSettings = getSettings();
 
-    // Debug: Show theme colors
     const themeColors = getThemeColors();
     console.log('Gradient Markdown Fix: Extension initialized');
     console.log('Gradient Markdown Fix: Works WITHOUT Auto-fix Markdown enabled');
-    console.log('Gradient Markdown Fix: Shows gradients on unclosed markdown that would be fixed');
     console.log('Gradient Markdown Fix: Theme colors loaded:', themeColors);
-    console.log('Gradient Markdown Fix: Warning color:', extensionSettings.warningColor);
 
-    // Add UI controls
     addUIControls();
-
-    // Start observing for new messages
     startMessageObservation();
 
     console.log('Gradient Markdown Fix extension initialized');
@@ -388,7 +360,6 @@ function applyGradientsToAllMessages() {
  * Start observing for new messages to apply gradients
  */
 function startMessageObservation() {
-    // Watch for new messages being added to the chat
     const chatContainer = document.getElementById('chat');
     if (!chatContainer) {
         console.log('Chat container not found, will retry...');
@@ -396,27 +367,22 @@ function startMessageObservation() {
         return;
     }
 
-    // Apply gradients to existing messages first
     applyGradientsToAllMessages();
 
-    // Set up periodic refresh to catch any altered messages
     setInterval(() => {
         if (extensionSettings.enabled) {
             applyGradientsToAllMessages();
         }
-    }, 2000); // Refresh every 2 seconds
+    }, 2000);
 
     const observer = new MutationObserver((mutations) => {
         mutations.forEach((mutation) => {
             if (mutation.type === 'childList') {
                 mutation.addedNodes.forEach((node) => {
                     if (node.nodeType === Node.ELEMENT_NODE) {
-                        // Check if this is a message element
                         if (node.classList && (node.classList.contains('mes') || node.querySelector('.mes_text'))) {
-                            // Apply gradients to this message
                             const messageText = node.querySelector('.mes_text');
                             if (messageText) {
-                                // Small delay to ensure markdown is fully rendered
                                 setTimeout(() => {
                                     applyGradientToMessage(messageText);
                                 }, 100);
@@ -436,15 +402,12 @@ function startMessageObservation() {
     console.log('Started observing chat messages for gradient application');
 }
 
-
 /**
  * Add UI controls to the extensions menu
  */
 function addUIControls() {
-    // Wait for DOM to be ready
     if (typeof jQuery !== 'undefined') {
         jQuery(() => {
-            // Add button to extensions menu
             const buttonHtml = `
                 <div class="list-group-item flex-container flexGap5 interactable" title="Gradient Markdown Fix Settings" data-i18n="[title]Gradient Markdown Fix Settings" tabindex="0">
                     <i class="fa-solid fa-paint-brush"></i>
@@ -455,16 +418,12 @@ function addUIControls() {
             const $extensionsMenu = jQuery('#extensionsMenu');
             if ($extensionsMenu.length) {
                 $extensionsMenu.append(buttonHtml);
-
-                // Add click handler
                 $extensionsMenu.find('.list-group-item:contains("Gradient Markdown Fix")').on('click', showSettingsPopup);
             }
 
-            // Add settings to extensions settings panel
             addSettingsToPanel();
         });
     } else {
-        // Fallback if jQuery is not available
         document.addEventListener('DOMContentLoaded', () => {
             addSettingsToPanel();
         });
@@ -482,7 +441,6 @@ function addSettingsToPanel() {
                 return;
             }
 
-            // Check if settings already added
             if (settingsContainer.find(`#${SETTINGS_KEY}-container`).length) {
                 return;
             }
@@ -516,7 +474,6 @@ function addSettingsToPanel() {
 
             settingsContainer.append(settingsHtml);
 
-            // Add event handlers
             jQuery(`#${SETTINGS_KEY}-enabled`).on('change', function() {
                 extensionSettings.enabled = this.checked;
                 saveSettings();
@@ -532,7 +489,6 @@ function addSettingsToPanel() {
 
             jQuery(`#${SETTINGS_KEY}-apply`).on('click', function() {
                 saveSettings();
-                // Update gradient styles
                 const styleElement = document.getElementById('gradient-markdown-fix-styles');
                 if (styleElement) {
                     styleElement.remove();
@@ -544,7 +500,6 @@ function addSettingsToPanel() {
                 }
             });
 
-            // Initialize drawer toggle
             jQuery(`#${SETTINGS_KEY}-container .inline-drawer-toggle`).on('click', function() {
                 jQuery(this).toggleClass('open');
                 jQuery(this).find('.inline-drawer-icon').toggleClass('down up');
@@ -558,7 +513,6 @@ function addSettingsToPanel() {
  * Show settings popup
  */
 function showSettingsPopup() {
-    // For now, just toggle the settings panel
     const container = document.getElementById(`${SETTINGS_KEY}-container`);
     if (container) {
         container.querySelector('.inline-drawer-toggle').click();
@@ -569,7 +523,6 @@ function showSettingsPopup() {
  * Clean up the extension
  */
 function cleanupExtension() {
-    // Remove styles
     const styleElement = document.getElementById('gradient-markdown-fix-styles');
     if (styleElement) {
         styleElement.remove();

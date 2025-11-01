@@ -6,7 +6,8 @@
     "js": "index.js",
     "css": "",
     "author": "Claude Code",
-    "version": "1.0.0",
+    "version": "1.0.1",
     "homePage": "https://github.com/[YOUR_USERNAME]/SillyTavern-GradientMarkdownFix",
     "description": "Shows gradient coloring on unclosed markdown to indicate what would be auto-fixed, without requiring Auto-fix Markdown to be enabled."
+
 }
